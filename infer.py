@@ -258,7 +258,7 @@ def _initialize_pipeline():
             return default
 
     tokenizer_subpath = cfg_get(config, 'text_encoder_kwargs', 'tokenizer_subpath', 'google/umt5-xxl')
-    text_encoder_subpath = cfg_get(config, 'text_encoder_kwargs', 'text_encoder_subpath', 'google/umt5-xxl')
+    text_encoder_subpath = cfg_get(config, 'text_encoder_kwargs', 'text_encoder_subpath', 'models_t5_umt5-xxl-enc-bf16.pth')
     vae_subpath = cfg_get(config, 'vae_kwargs', 'vae_subpath', 'Wan2.1_VAE.pth')
     image_encoder_subpath = cfg_get(config, 'image_encoder_kwargs', 'image_encoder_subpath', 'xlm-roberta-large')
     transformer_subpath = cfg_get(config, 'transformer_additional_kwargs', 'transformer_subpath', 'transformer3d-square.pt')
