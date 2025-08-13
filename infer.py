@@ -227,6 +227,7 @@ def _initialize_pipeline():
 
     base_dir = Path(__file__).resolve().parent
     checkpoints_dir = base_dir / "checkpoints"
+    wan_dir = os.getenv("STABLEAVATAR_WAN_DIR", str(checkpoints_dir / "Wan2.1-Fun-V1.1-1.3B-InP"))
     pretrained_dir = os.getenv("STABLEAVATAR_PRETRAINED_DIR", str(checkpoints_dir / "StableAvatar-1.3B"))
     wav2vec_dir = os.getenv("STABLEAVATAR_WAV2VEC_DIR", str(checkpoints_dir / "wav2vec2-base-960h"))
     config_path_env = os.getenv("STABLEAVATAR_CONFIG_PATH", str(Path(pretrained_dir) / "config.yaml"))
@@ -256,13 +257,13 @@ def _initialize_pipeline():
         except Exception:
             return default
 
-    tokenizer_subpath = cfg_get(config, 'text_encoder_kwargs', 'tokenizer_subpath', 'tokenizer')
-    text_encoder_subpath = cfg_get(config, 'text_encoder_kwargs', 'text_encoder_subpath', 'text_encoder')
-    vae_subpath = cfg_get(config, 'vae_kwargs', 'vae_subpath', 'vae')
-    image_encoder_subpath = cfg_get(config, 'image_encoder_kwargs', 'image_encoder_subpath', 'image_encoder')
-    transformer_subpath = cfg_get(config, 'transformer_additional_kwargs', 'transformer_subpath', 'transformer')
+    tokenizer_subpath = cfg_get(config, 'text_encoder_kwargs', 'tokenizer_subpath', 'google/umt5-xxl')
+    text_encoder_subpath = cfg_get(config, 'text_encoder_kwargs', 'text_encoder_subpath', 'google/umt5-xxl')
+    vae_subpath = cfg_get(config, 'vae_kwargs', 'vae_subpath', 'Wan2.1_VAE.pth')
+    image_encoder_subpath = cfg_get(config, 'image_encoder_kwargs', 'image_encoder_subpath', 'xlm-roberta-large')
+    transformer_subpath = cfg_get(config, 'transformer_additional_kwargs', 'transformer_subpath', 'transformer3d-square.pt')
 
-    tokenizer = AutoTokenizer.from_pretrained(os.path.join(pretrained_dir, tokenizer_subpath))
+    tokenizer = AutoTokenizer.from_pretrained(os.path.join(wan_dir, tokenizer_subpath))
 
     text_kwargs = {
         'low_cpu_mem_usage': True,
@@ -273,8 +274,9 @@ def _initialize_pipeline():
             text_kwargs['additional_kwargs'] = OmegaConf.to_container(config['text_encoder_kwargs'])
         except Exception:
             pass
+
     text_encoder = WanT5EncoderModel.from_pretrained(
-        os.path.join(pretrained_dir, text_encoder_subpath),
+        os.path.join(wan_dir, text_encoder_subpath),
         **text_kwargs,
     ).eval()
 
@@ -284,8 +286,9 @@ def _initialize_pipeline():
             vae_kwargs['additional_kwargs'] = OmegaConf.to_container(config['vae_kwargs'])
         except Exception:
             pass
+
     vae = AutoencoderKLWan.from_pretrained(
-        os.path.join(pretrained_dir, vae_subpath),
+        os.path.join(wan_dir, vae_subpath),
         **vae_kwargs,
     )
 
@@ -293,7 +296,7 @@ def _initialize_pipeline():
     wav2vec = Wav2Vec2Model.from_pretrained(wav2vec_dir)
 
     clip_image_encoder = CLIPModel.from_pretrained(
-        os.path.join(pretrained_dir, image_encoder_subpath)
+        os.path.join(wan_dir, image_encoder_subpath)
     ).eval()
 
     transformer_kwargs = {
@@ -305,6 +308,7 @@ def _initialize_pipeline():
             transformer_kwargs['transformer_additional_kwargs'] = OmegaConf.to_container(config['transformer_additional_kwargs'])
         except Exception:
             pass
+
     transformer3d = WanTransformer3DFantasyModel.from_pretrained(
         os.path.join(pretrained_dir, transformer_subpath),
         **transformer_kwargs,
