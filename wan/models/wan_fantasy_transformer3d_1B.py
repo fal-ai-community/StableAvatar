@@ -1211,8 +1211,9 @@ class WanTransformer3DFantasyModel(ModelMixin, ConfigMixin, FromOriginalModelMix
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
-            for key in transformer_additional_kwargs["dict_mapping"]:
-                transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[key]
+            for key, value in transformer_additional_kwargs["dict_mapping"].items():
+                if value in config:
+                    transformer_additional_kwargs[transformer_additional_kwargs["dict_mapping"][key]] = config[value]
 
         # {'patch_size', 'qk_norm', 'window_size', 'cross_attn_norm', 'text_dim'} was not found in config. Values will be initialized to default values.
         transformer_additional_kwargs["patch_size"] = (1, 2, 2)
