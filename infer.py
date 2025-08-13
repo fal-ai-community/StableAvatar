@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+import logging
 
 import imageio
 import librosa
@@ -9,7 +10,6 @@ import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 import torchvision
-from accelerate.logging import get_logger
 from diffusers import FlowMatchEulerDiscreteScheduler
 from diffusers.utils import check_min_version
 from einops import rearrange
@@ -158,7 +158,8 @@ def resize_mask(mask, latent, process_first_frame_only=True):
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
 check_min_version("0.18.0.dev0")
 
-logger = get_logger(__name__, log_level="INFO")
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 
 # Global, lazily accessible inference pipeline loaded on import
@@ -276,7 +277,7 @@ def _initialize_pipeline():
         config,
         "transformer_additional_kwargs",
         "transformer_subpath",
-        "transformer3d-square.pt",
+        "Wan2.1-Fun-V1.1-1.3B-InP",
     )
 
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(wan_dir, tokenizer_subpath))
@@ -334,6 +335,7 @@ def _initialize_pipeline():
     transformer_kwargs = {
         "low_cpu_mem_usage": False,
         "torch_dtype": weight_dtype,
+        "model_file": os.path.join(pretrained_dir, "transformer3d-square.pt"),
     }
     if config is not None and "transformer_additional_kwargs" in config:
         try:
@@ -344,7 +346,7 @@ def _initialize_pipeline():
             pass
 
     transformer3d = WanTransformer3DFantasyModel.from_pretrained(
-        os.path.join(pretrained_dir, transformer_subpath),
+        os.path.join(checkpoints_dir, transformer_subpath),
         **transformer_kwargs,
     )
     if _is_dist_enabled():

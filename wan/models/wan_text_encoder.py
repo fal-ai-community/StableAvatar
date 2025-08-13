@@ -345,10 +345,11 @@ class WanT5EncoderModel(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 unexpected_keys = load_model_dict_into_meta(
                     model,
                     state_dict,
-                    device=param_device,
+                    device_map={"": param_device},
                     dtype=torch_dtype,
                     model_name_or_path=pretrained_model_path,
                 )
+                unexpected_keys = [k for k in unexpected_keys if k is not None]
 
                 if cls._keys_to_ignore_on_load_unexpected is not None:
                     for pat in cls._keys_to_ignore_on_load_unexpected:

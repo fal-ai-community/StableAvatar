@@ -1192,7 +1192,7 @@ class WanTransformer3DFantasyModel(ModelMixin, ConfigMixin, FromOriginalModelMix
     @classmethod
     def from_pretrained(
             cls, pretrained_model_path, subfolder=None, transformer_additional_kwargs={},
-            low_cpu_mem_usage=False, torch_dtype=torch.bfloat16
+            low_cpu_mem_usage=False, model_file=None, torch_dtype=torch.bfloat16
     ):
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
@@ -1205,7 +1205,9 @@ class WanTransformer3DFantasyModel(ModelMixin, ConfigMixin, FromOriginalModelMix
             config = json.load(f)
 
         from diffusers.utils import WEIGHTS_NAME
-        model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+        if model_file is None:
+            model_file = os.path.join(pretrained_model_path, WEIGHTS_NAME)
+
         model_file_safetensors = model_file.replace(".bin", ".safetensors")
 
         if "dict_mapping" in transformer_additional_kwargs.keys():
