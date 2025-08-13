@@ -1,7 +1,7 @@
+import logging
 import os
 import subprocess
 from pathlib import Path
-import logging
 
 import imageio
 import librosa
@@ -224,6 +224,7 @@ def _initialize_pipeline():
         "STABLEAVATAR_PRETRAINED_DIR", str(checkpoints_dir / "StableAvatar-1.3B")
     )
     wav2vec_dir = os.getenv(
+        
         "STABLEAVATAR_WAV2VEC_DIR", str(checkpoints_dir / "wav2vec2-base-960h")
     )
     config_path_env = os.getenv(
@@ -280,7 +281,14 @@ def _initialize_pipeline():
         "Wan2.1-Fun-V1.1-1.3B-InP",
     )
 
+    component_progress = tqdm(
+        desc="Loading StableAvatar components",
+        total=6,
+        disable=not _is_main_process(),
+    )
+
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(wan_dir, tokenizer_subpath))
+    component_progress.update(1)
 
     text_kwargs = {
         "low_cpu_mem_usage": True,
@@ -310,6 +318,9 @@ def _initialize_pipeline():
         os.path.join(wan_dir, text_encoder_subpath),
         **text_kwargs,
     ).eval()
+    text_encoder.to(device=device)
+
+    component_progress.update(1)
 
     vae_kwargs = {}
     if config is not None and "vae_kwargs" in config:
@@ -324,13 +335,24 @@ def _initialize_pipeline():
         os.path.join(wan_dir, vae_subpath),
         **vae_kwargs,
     )
+    vae.to(device=device)
+    vae.eval()
+
+    component_progress.update(1)
 
     wav2vec_processor = Wav2Vec2Processor.from_pretrained(wav2vec_dir)
     wav2vec = Wav2Vec2Model.from_pretrained(wav2vec_dir)
+    wav2vec.eval()
+    wav2vec.to(device=device)
 
+    component_progress.update(1)
+    
     clip_image_encoder = CLIPModel.from_pretrained(
         os.path.join(wan_dir, image_encoder_subpath)
     ).eval()
+    clip_image_encoder.to(device=device)
+
+    component_progress.update(1)
 
     transformer_kwargs = {
         "low_cpu_mem_usage": False,
@@ -354,6 +376,8 @@ def _initialize_pipeline():
             transformer3d.enable_multi_gpus_inference()
         except Exception as ex:
             logger.warning(f"enable_multi_gpus_inference failed: {ex}")
+
+    component_progress.update(1)
 
     Choosen_Scheduler = {
         "Flow": FlowMatchEulerDiscreteScheduler,
@@ -500,8 +524,7 @@ def generate(
     fsdp_dit: bool = False,
     seed: int = None,
     motion_frame: int = 25,
-    sample_steps: int = None,
-    sample_shift: float = None,
+    sample_steps: int = 50,
     sample_text_guide_scale: float = 5.0,
     sample_audio_guide_scale: float = 4.0,
     overlap_window_length: int = 10,
