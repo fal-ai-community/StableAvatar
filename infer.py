@@ -1,56 +1,38 @@
-import gc
-import logging
-import math
 import os
-import random
-import shutil
 import subprocess
-from functools import partial
+from pathlib import Path
 
-import diffusers
+import imageio
+import librosa
 import numpy as np
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
-import torch.utils.checkpoint
-import torchvision.transforms.functional as TF
-import transformers
-from accelerate import Accelerator
+import torchvision
 from accelerate.logging import get_logger
-from accelerate.utils import ProjectConfiguration, set_seed
-from diffusers import DDIMScheduler, FlowMatchEulerDiscreteScheduler
-from diffusers.optimization import get_scheduler
-from diffusers.training_utils import (EMAModel,
-                                      compute_density_for_timestep_sampling,
-                                      compute_loss_weighting_for_sd3)
-from diffusers.utils import check_min_version, deprecate, is_wandb_available
+from diffusers import FlowMatchEulerDiscreteScheduler
+from diffusers.utils import check_min_version
 from einops import rearrange
 from omegaconf import OmegaConf
 from PIL import Image
 from tqdm.auto import tqdm
-from transformers import AutoTokenizer
-import librosa
-from pathlib import Path
-import imageio
-import torchvision
-from transformers import Wav2Vec2Model, Wav2Vec2Processor
-import torch.distributed as dist
+from transformers import AutoTokenizer, Wav2Vec2Model, Wav2Vec2Processor
 
-from wan.dist import set_multi_gpus_devices
-from wan.distributed.fsdp import shard_model
 from wan.models.cache_utils import get_teacache_coefficients
 from wan.models.wan_fantasy_transformer3d_1B import WanTransformer3DFantasyModel
+from wan.models.wan_image_encoder import CLIPModel
 from wan.models.wan_text_encoder import WanT5EncoderModel
 from wan.models.wan_vae import AutoencoderKLWan
-from wan.models.wan_image_encoder import CLIPModel
 from wan.pipeline.wan_inference_long_pipeline import WanI2VTalkingInferenceLongPipeline
-
-from wan.utils.discrete_sampler import DiscreteSampling
-from wan.utils.fp8_optimization import replace_parameters_by_name, convert_weight_dtype_wrapper, \
-    convert_model_weight_to_float8
 from wan.utils.utils import get_image_to_video_latent, save_videos_grid
 
-def save_video_ffmpeg(gen_video_samples, save_path, vocal_audio_path, fps=25, quality=10):
-    def save_video(frames, save_path, fps, quality=9, ffmpeg_params=None, saved_frames_dir=None):
+
+def save_video_ffmpeg(
+    gen_video_samples, save_path, vocal_audio_path, fps=25, quality=10
+):
+    def save_video(
+        frames, save_path, fps, quality=9, ffmpeg_params=None, saved_frames_dir=None
+    ):
         writer = imageio.get_writer(
             save_path, fps=fps, quality=quality, ffmpeg_params=ffmpeg_params
         )
@@ -71,7 +53,13 @@ def save_video_ffmpeg(gen_video_samples, save_path, vocal_audio_path, fps=25, qu
     video_audio = (gen_video_samples / 2 + 0.5).clamp(0, 1)
     video_audio = video_audio.permute(1, 2, 3, 0).cpu().numpy()
     video_audio = np.clip(video_audio * 255, 0, 255).astype(np.uint8)  # to [0, 255]
-    save_video(video_audio, save_path_tmp, fps=fps, quality=quality, saved_frames_dir=saved_frames_dir)
+    save_video(
+        video_audio,
+        save_path_tmp,
+        fps=fps,
+        quality=quality,
+        saved_frames_dir=saved_frames_dir,
+    )
 
     # crop audio according to video length
     _, T, _, _ = gen_video_samples.shape
@@ -82,7 +70,7 @@ def save_video_ffmpeg(gen_video_samples, save_path, vocal_audio_path, fps=25, qu
         "-i",
         vocal_audio_path,
         "-t",
-        f'{duration}',
+        f"{duration}",
         save_path_crop_audio,
     ]
     subprocess.run(final_command, check=True)
@@ -90,14 +78,16 @@ def save_video_ffmpeg(gen_video_samples, save_path, vocal_audio_path, fps=25, qu
 
 def filter_kwargs(cls, kwargs):
     import inspect
+
     sig = inspect.signature(cls.__init__)
-    valid_params = set(sig.parameters.keys()) - {'self', 'cls'}
+    valid_params = set(sig.parameters.keys()) - {"self", "cls"}
     filtered_kwargs = {k: v for k, v in kwargs.items() if k in valid_params}
     return filtered_kwargs
 
 
-def get_random_downsample_ratio(sample_size, image_ratio=[],
-                                all_choices=False, rng=None):
+def get_random_downsample_ratio(
+    sample_size, image_ratio=[], all_choices=False, rng=None
+):
     def _create_special_list(length):
         if length == 1:
             return [1.0]
@@ -139,8 +129,8 @@ def resize_mask(mask, latent, process_first_frame_only=True):
         first_frame_resized = F.interpolate(
             mask[:, :, 0:1, :, :],
             size=target_size,
-            mode='trilinear',
-            align_corners=False
+            mode="trilinear",
+            align_corners=False,
         )
 
         target_size = list(latent_size[2:])
@@ -149,19 +139,18 @@ def resize_mask(mask, latent, process_first_frame_only=True):
             remaining_frames_resized = F.interpolate(
                 mask[:, :, 1:, :, :],
                 size=target_size,
-                mode='trilinear',
-                align_corners=False
+                mode="trilinear",
+                align_corners=False,
             )
-            resized_mask = torch.cat([first_frame_resized, remaining_frames_resized], dim=2)
+            resized_mask = torch.cat(
+                [first_frame_resized, remaining_frames_resized], dim=2
+            )
         else:
             resized_mask = first_frame_resized
     else:
         target_size = list(latent_size[2:])
         resized_mask = F.interpolate(
-            mask,
-            size=target_size,
-            mode='trilinear',
-            align_corners=False
+            mask, size=target_size, mode="trilinear", align_corners=False
         )
     return resized_mask
 
@@ -227,10 +216,18 @@ def _initialize_pipeline():
 
     base_dir = Path(__file__).resolve().parent
     checkpoints_dir = base_dir / "checkpoints"
-    wan_dir = os.getenv("STABLEAVATAR_WAN_DIR", str(checkpoints_dir / "Wan2.1-Fun-V1.1-1.3B-InP"))
-    pretrained_dir = os.getenv("STABLEAVATAR_PRETRAINED_DIR", str(checkpoints_dir / "StableAvatar-1.3B"))
-    wav2vec_dir = os.getenv("STABLEAVATAR_WAV2VEC_DIR", str(checkpoints_dir / "wav2vec2-base-960h"))
-    config_path_env = os.getenv("STABLEAVATAR_CONFIG_PATH", str(Path(pretrained_dir) / "config.yaml"))
+    wan_dir = os.getenv(
+        "STABLEAVATAR_WAN_DIR", str(checkpoints_dir / "Wan2.1-Fun-V1.1-1.3B-InP")
+    )
+    pretrained_dir = os.getenv(
+        "STABLEAVATAR_PRETRAINED_DIR", str(checkpoints_dir / "StableAvatar-1.3B")
+    )
+    wav2vec_dir = os.getenv(
+        "STABLEAVATAR_WAV2VEC_DIR", str(checkpoints_dir / "wav2vec2-base-960h")
+    )
+    config_path_env = os.getenv(
+        "STABLEAVATAR_CONFIG_PATH", str(Path(pretrained_dir) / "config.yaml")
+    )
 
     # Initialize distributed if launched with torchrun, and choose device
     _ensure_dist_initialized()
@@ -245,7 +242,9 @@ def _initialize_pipeline():
             config = OmegaConf.load(config_path_env)
             logger.info(f"Loaded config from: {config_path_env}")
         except Exception as ex:
-            logger.warning(f"Failed to load config at {config_path_env}: {ex}. Proceeding with defaults.")
+            logger.warning(
+                f"Failed to load config at {config_path_env}: {ex}. Proceeding with defaults."
+            )
             config = None
 
     # Resolve subpaths with config fallbacks
@@ -257,21 +256,52 @@ def _initialize_pipeline():
         except Exception:
             return default
 
-    tokenizer_subpath = cfg_get(config, 'text_encoder_kwargs', 'tokenizer_subpath', 'google/umt5-xxl')
-    text_encoder_subpath = cfg_get(config, 'text_encoder_kwargs', 'text_encoder_subpath', 'models_t5_umt5-xxl-enc-bf16.pth')
-    vae_subpath = cfg_get(config, 'vae_kwargs', 'vae_subpath', 'Wan2.1_VAE.pth')
-    image_encoder_subpath = cfg_get(config, 'image_encoder_kwargs', 'image_encoder_subpath', 'xlm-roberta-large')
-    transformer_subpath = cfg_get(config, 'transformer_additional_kwargs', 'transformer_subpath', 'transformer3d-square.pt')
+    tokenizer_subpath = cfg_get(
+        config, "text_encoder_kwargs", "tokenizer_subpath", "google/umt5-xxl"
+    )
+    text_encoder_subpath = cfg_get(
+        config,
+        "text_encoder_kwargs",
+        "text_encoder_subpath",
+        "models_t5_umt5-xxl-enc-bf16.pth",
+    )
+    vae_subpath = cfg_get(config, "vae_kwargs", "vae_subpath", "Wan2.1_VAE.pth")
+    image_encoder_subpath = cfg_get(
+        config,
+        "image_encoder_kwargs",
+        "image_encoder_subpath",
+        "models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth",
+    )
+    transformer_subpath = cfg_get(
+        config,
+        "transformer_additional_kwargs",
+        "transformer_subpath",
+        "transformer3d-square.pt",
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(os.path.join(wan_dir, tokenizer_subpath))
 
     text_kwargs = {
-        'low_cpu_mem_usage': True,
-        'torch_dtype': weight_dtype,
+        "low_cpu_mem_usage": True,
+        "torch_dtype": weight_dtype,
+        "additional_kwargs": {
+            "text_length": 512,
+            "vocab": 256384,
+            "dim": 4096,
+            "dim_attn": 4096,
+            "dim_ffn": 10240,
+            "num_heads": 64,
+            "num_layers": 24,
+            "num_buckets": 32,
+            "shared_pos": False,
+            "dropout": 0.0,
+        },
     }
-    if config is not None and 'text_encoder_kwargs' in config:
+    if config is not None and "text_encoder_kwargs" in config:
         try:
-            text_kwargs['additional_kwargs'] = OmegaConf.to_container(config['text_encoder_kwargs'])
+            text_kwargs["additional_kwargs"] = OmegaConf.to_container(
+                config["text_encoder_kwargs"]
+            )
         except Exception:
             pass
 
@@ -281,9 +311,11 @@ def _initialize_pipeline():
     ).eval()
 
     vae_kwargs = {}
-    if config is not None and 'vae_kwargs' in config:
+    if config is not None and "vae_kwargs" in config:
         try:
-            vae_kwargs['additional_kwargs'] = OmegaConf.to_container(config['vae_kwargs'])
+            vae_kwargs["additional_kwargs"] = OmegaConf.to_container(
+                config["vae_kwargs"]
+            )
         except Exception:
             pass
 
@@ -300,12 +332,14 @@ def _initialize_pipeline():
     ).eval()
 
     transformer_kwargs = {
-        'low_cpu_mem_usage': False,
-        'torch_dtype': weight_dtype,
+        "low_cpu_mem_usage": False,
+        "torch_dtype": weight_dtype,
     }
-    if config is not None and 'transformer_additional_kwargs' in config:
+    if config is not None and "transformer_additional_kwargs" in config:
         try:
-            transformer_kwargs['transformer_additional_kwargs'] = OmegaConf.to_container(config['transformer_additional_kwargs'])
+            transformer_kwargs["transformer_additional_kwargs"] = (
+                OmegaConf.to_container(config["transformer_additional_kwargs"])
+            )
         except Exception:
             pass
 
@@ -322,9 +356,20 @@ def _initialize_pipeline():
     Choosen_Scheduler = {
         "Flow": FlowMatchEulerDiscreteScheduler,
     }[sampler_name]
-    if config is not None and 'scheduler_kwargs' in config:
+    scheduler_kwargs = {
+        "num_train_timesteps": 1000,
+        "shift": 5.0,
+        "use_dynamic_shifting": False,
+        "base_shift": 0.5,
+        "max_shift": 1.15,
+        "base_image_seq_len": 256,
+        "max_image_seq_len": 4096,
+    }
+    if config is not None and "scheduler_kwargs" in config:
         scheduler = Choosen_Scheduler(
-            **filter_kwargs(Choosen_Scheduler, OmegaConf.to_container(config['scheduler_kwargs']))
+            **filter_kwargs(
+                Choosen_Scheduler, OmegaConf.to_container(config["scheduler_kwargs"])
+            )
         )
     else:
         scheduler = Choosen_Scheduler()
@@ -349,7 +394,9 @@ def _initialize_pipeline():
             world = dist.get_world_size()
         except Exception:
             rank, world = 0, int(os.getenv("WORLD_SIZE", "1"))
-        logger.info(f"StableAvatar pipeline initialized on CUDA device {device} [rank {rank}/{world}].")
+        logger.info(
+            f"StableAvatar pipeline initialized on CUDA device {device} [rank {rank}/{world}]."
+        )
     else:
         logger.info("StableAvatar pipeline initialized and moved to CUDA.")
     return _PIPELINE
@@ -381,13 +428,15 @@ def save_videos_from_pil(pil_images, path, fps=8):
             duration=(1 / fps * 1000),
             loop=0,
             optimize=False,
-            lossless=True
+            lossless=True,
         )
     else:
         raise ValueError("Unsupported file type. Use .mp4 or .gif.")
 
 
-def save_videos_grid_png_and_mp4(videos: torch.Tensor, rescale=False, n_rows=6, save_frames_path=None):
+def save_videos_grid_png_and_mp4(
+    videos: torch.Tensor, rescale=False, n_rows=6, save_frames_path=None
+):
     videos = rearrange(videos, "b c t h w -> t b c h w")
     height, width = videos.shape[-2:]
     outputs = []
@@ -401,11 +450,14 @@ def save_videos_grid_png_and_mp4(videos: torch.Tensor, rescale=False, n_rows=6, 
         x = Image.fromarray(x)
         outputs.append(x)
 
-    pil_frames = [Image.fromarray(frame) if isinstance(frame, np.ndarray) else frame for frame in outputs]
+    pil_frames = [
+        Image.fromarray(frame) if isinstance(frame, np.ndarray) else frame
+        for frame in outputs
+    ]
     num_frames = len(pil_frames)
     for i in range(num_frames):
         pil_frame = pil_frames[i]
-        save_path = os.path.join(save_frames_path, f'frame_{i}.png')
+        save_path = os.path.join(save_frames_path, f"frame_{i}.png")
         pil_frame.save(save_path)
 
 
@@ -468,11 +520,22 @@ def generate(
     # Optional TeaCache enabling using the preloaded model directory
     if enable_teacache:
         try:
-            coefficients = get_teacache_coefficients(os.getenv("STABLEAVATAR_PRETRAINED_DIR", str(Path(__file__).resolve().parent / "checkpoints" / "StableAvatar-1.3B")))
+            coefficients = get_teacache_coefficients(
+                os.getenv(
+                    "STABLEAVATAR_PRETRAINED_DIR",
+                    str(
+                        Path(__file__).resolve().parent
+                        / "checkpoints"
+                        / "StableAvatar-1.3B"
+                    ),
+                )
+            )
         except Exception:
             coefficients = None
         if coefficients is not None:
-            print(f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps.")
+            print(
+                f"Enable TeaCache with threshold {teacache_threshold} and skip the first {num_skip_start_steps} steps."
+            )
             pipeline.transformer.enable_teacache(
                 coefficients,
                 sample_steps,
@@ -488,8 +551,19 @@ def generate(
         generator = torch.Generator(device=device)
 
     with torch.no_grad():
-        video_length = int((clip_sample_n_frames - 1) // vae.config.temporal_compression_ratio * vae.config.temporal_compression_ratio) + 1 if clip_sample_n_frames != 1 else 1
-        input_video, input_video_mask, clip_image = get_image_to_video_latent(image_path, None, video_length=video_length, sample_size=[height, width])
+        video_length = (
+            int(
+                (clip_sample_n_frames - 1)
+                // vae.config.temporal_compression_ratio
+                * vae.config.temporal_compression_ratio
+            )
+            + 1
+            if clip_sample_n_frames != 1
+            else 1
+        )
+        input_video, input_video_mask, clip_image = get_image_to_video_latent(
+            image_path, None, video_length=video_length, sample_size=[height, width]
+        )
         sr = 16000
         vocal_input, sample_rate = librosa.load(audio_path, sr=sr)
 
