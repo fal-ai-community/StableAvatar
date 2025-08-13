@@ -228,7 +228,7 @@ def _initialize_pipeline():
         "STABLEAVATAR_WAV2VEC_DIR", str(checkpoints_dir / "wav2vec2-base-960h")
     )
     config_path_env = os.getenv(
-        "STABLEAVATAR_CONFIG_PATH", str(Path(pretrained_dir) / "config.yaml")
+        "STABLEAVATAR_CONFIG_PATH", str(base_dir / "deepspeed_config" / "wan2.1" / "wan_civitai.yaml")
     )
 
     # Initialize distributed if launched with torchrun, and choose device
@@ -248,6 +248,8 @@ def _initialize_pipeline():
                 f"Failed to load config at {config_path_env}: {ex}. Proceeding with defaults."
             )
             config = None
+    else:
+        print(f"No config file found at {config_path_env}, using default config")
 
     # Resolve subpaths with config fallbacks
     def cfg_get(cfg, section, key, default):
@@ -555,7 +557,8 @@ def generate(
                     ),
                 )
             )
-        except Exception:
+        except Exception as ex:
+            print(f"Failed to load TeaCache coefficients: {ex}")
             coefficients = None
         if coefficients is not None:
             print(
@@ -571,9 +574,9 @@ def generate(
 
     # RNG
     if seed is not None:
-        generator = torch.Generator(device=device).manual_seed(seed)
+        generator = torch.Generator().manual_seed(seed)
     else:
-        generator = torch.Generator(device=device)
+        generator = torch.Generator()
 
     with torch.no_grad():
         video_length = (
@@ -594,6 +597,8 @@ def generate(
 
         if isinstance(prompt, str):
             prompt = [prompt]
+
+        print(f"{prompt=} {input_video=} {input_video_mask=} {clip_image=} {video_length=} {height=} {width=} {guidance_scale=} {generator=} {sample_steps=} {motion_frame=} {fps=} {sr=} {overlap_window_length=}")
 
         sample = pipeline(
             prompt,
@@ -617,6 +622,8 @@ def generate(
             seed=seed,
             overlap_window_length=overlap_window_length,
         ).videos
+
+        print(f"{sample=}")
 
         saved_frames_dir = os.path.join(output_dir, "animated_images")
         os.makedirs(saved_frames_dir, exist_ok=True)
