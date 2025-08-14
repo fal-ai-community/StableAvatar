@@ -598,8 +598,6 @@ def generate(
         if isinstance(prompt, str):
             prompt = [prompt]
 
-        print(f"{prompt=} {input_video=} {input_video_mask=} {clip_image=} {video_length=} {height=} {width=} {guidance_scale=} {generator=} {sample_steps=} {motion_frame=} {fps=} {sr=} {overlap_window_length=}")
-
         sample = pipeline(
             prompt,
             num_frames=video_length,
@@ -622,8 +620,6 @@ def generate(
             seed=seed,
             overlap_window_length=overlap_window_length,
         ).videos
-
-        print(f"{sample=}")
 
         saved_frames_dir = os.path.join(output_dir, "animated_images")
         os.makedirs(saved_frames_dir, exist_ok=True)

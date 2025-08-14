@@ -711,8 +711,6 @@ class WanI2VTalkingInferenceLongPipeline(DiffusionPipeline):
                 index_end = index_start + frames_per_batch
                 index_previous_end = index_end
 
-                print(f"{index_start=} {index_end=} {infer_length=}")
-
                 while index_end <= infer_length:
                     self.scheduler._step_index = None
                     idx_list = [ii % latents_all.shape[2] for ii in range(index_start, index_end)]
