@@ -359,7 +359,7 @@ def _initialize_pipeline():
     transformer_kwargs = {
         "low_cpu_mem_usage": False,
         "torch_dtype": weight_dtype,
-        "model_file": os.path.join(pretrained_dir, "transformer3d-square.pt"),
+        "model_file": os.path.join(pretrained_dir, "transformer3d-rec-vec.pt"),
     }
     if config is not None and "transformer_additional_kwargs" in config:
         try:
@@ -627,3 +627,4 @@ def generate(
 
         if _is_main_process():
             save_videos_grid(sample, video_path, fps=fps)
+
